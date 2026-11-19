@@ -8,13 +8,22 @@ import {
   BatchSummaryPanel,
   type BatchProgressState,
 } from "./components/BatchSummaryPanel.tsx";
-import type { AssetStatus, MappingConfig, PlannedAsset, WorkbookData } from "./types/asset.ts";
+import type {
+  AssetStatus,
+  AssetViewMode,
+  DuplicateMatchScope,
+  MappingConfig,
+  PlannedAsset,
+  WorkbookData,
+} from "./types/asset.ts";
+import type { BulkRenamePreviewItem } from "./utils/bulkRename.ts";
 import {
   downloadSampleExcelTemplate,
   inferColumnMapping,
   parseSpreadsheetFile,
 } from "./utils/excelParser.ts";
 import {
+  analyzeDuplicateFilenames,
   buildPlannedAssets,
   buildTargetPath,
   groupAssetsByFolder,
@@ -89,6 +98,12 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     () => initialSession?.selectedIds ?? new Set()
   );
+  const [assetViewMode, setAssetViewMode] = useState<AssetViewMode>(
+    () => initialSession?.assetViewMode ?? "all"
+  );
+  const [duplicateMatchScope, setDuplicateMatchScope] = useState<DuplicateMatchScope>(
+    () => initialSession?.duplicateMatchScope ?? "filename"
+  );
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [isValidating, setIsValidating] = useState(false);
@@ -126,6 +141,8 @@ export default function App() {
     assets,
     selectedFolder,
     selectedIds,
+    assetViewMode,
+    duplicateMatchScope,
   });
 
   const activeSheet = workbook?.sheets[activeSheetIndex] ?? null;
@@ -156,6 +173,8 @@ export default function App() {
       assets,
       selectedFolder,
       selectedIds,
+      assetViewMode,
+      duplicateMatchScope,
     };
 
     if (!hasMountedRef.current) {
@@ -188,7 +207,16 @@ export default function App() {
     return () => {
       window.clearTimeout(debounceId);
     };
-  }, [workbook, activeSheetIndex, mapping, assets, selectedFolder, selectedIds]);
+  }, [
+    workbook,
+    activeSheetIndex,
+    mapping,
+    assets,
+    selectedFolder,
+    selectedIds,
+    assetViewMode,
+    duplicateMatchScope,
+  ]);
 
   // Periodic 5-second auto-save interval + flush before page unload / tab hide
   useEffect(() => {
@@ -258,6 +286,7 @@ export default function App() {
     setAssets([]);
     setSelectedFolder(null);
     setSelectedIds(new Set());
+    setAssetViewMode("all");
     setParseError(null);
     setNotice(null);
     setLastSavedAt(null);
@@ -459,13 +488,31 @@ export default function App() {
     setSelectedIds(new Set());
   };
 
+  const duplicateAnalysis = useMemo(
+    () => analyzeDuplicateFilenames(assets, duplicateMatchScope),
+    [assets, duplicateMatchScope]
+  );
+
+  const effectiveAssets = useMemo(
+    () =>
+      assetViewMode === "unique"
+        ? assets.filter((a) => !duplicateAnalysis.duplicateIds.has(a.id))
+        : assets,
+    [assets, assetViewMode, duplicateAnalysis.duplicateIds]
+  );
+
   const runBatchValidate = async (targetStatuses: AssetStatus[]) => {
     if (isValidating || isFetching || isConverting) return;
 
+    const basePool =
+      assetViewMode === "unique"
+        ? assetsRef.current.filter((a) => !duplicateAnalysis.duplicateIds.has(a.id))
+        : assetsRef.current;
+
     const pool =
       selectedIds.size > 0
-        ? assetsRef.current.filter((a) => selectedIds.has(a.id))
-        : assetsRef.current;
+        ? basePool.filter((a) => selectedIds.has(a.id))
+        : basePool;
 
     const queue = pool.filter((a) => targetStatuses.includes(a.status));
     if (queue.length === 0) return;
@@ -608,10 +655,15 @@ export default function App() {
   const runBatchFetch = async (targetStatuses: AssetStatus[]) => {
     if (isFetching || isValidating || isConverting) return;
 
+    const basePool =
+      assetViewMode === "unique"
+        ? assetsRef.current.filter((a) => !duplicateAnalysis.duplicateIds.has(a.id))
+        : assetsRef.current;
+
     const pool =
       selectedIds.size > 0
-        ? assetsRef.current.filter((a) => selectedIds.has(a.id))
-        : assetsRef.current;
+        ? basePool.filter((a) => selectedIds.has(a.id))
+        : basePool;
 
     const queue = pool.filter((a) => targetStatuses.includes(a.status));
     if (queue.length === 0) return;
@@ -767,10 +819,15 @@ export default function App() {
   const runBatchConvert = async () => {
     if (isConverting || isFetching || isValidating) return;
 
+    const basePool =
+      assetViewMode === "unique"
+        ? assetsRef.current.filter((a) => !duplicateAnalysis.duplicateIds.has(a.id))
+        : assetsRef.current;
+
     const pool =
       selectedIds.size > 0
-        ? assetsRef.current.filter((a) => selectedIds.has(a.id))
-        : assetsRef.current;
+        ? basePool.filter((a) => selectedIds.has(a.id))
+        : basePool;
 
     const savedWithBlobs = pool.filter(
       (a) => a.status === "saved" && Boolean(a.blob)
@@ -915,8 +972,8 @@ export default function App() {
     try {
       const targetAssets =
         selectedIds.size > 0
-          ? assets.filter((a) => selectedIds.has(a.id))
-          : assets;
+          ? effectiveAssets.filter((a) => selectedIds.has(a.id))
+          : effectiveAssets;
       const zipName =
         mapping.rootFolderName.trim() ||
         workbook?.fileName.replace(/\.(xlsx|xls|csv)$/i, "") ||
@@ -945,8 +1002,8 @@ export default function App() {
     try {
       const targetAssets =
         selectedIds.size > 0
-          ? assets.filter((a) => selectedIds.has(a.id))
-          : assets;
+          ? effectiveAssets.filter((a) => selectedIds.has(a.id))
+          : effectiveAssets;
       const written = await saveAssetsToLocalFolder(targetAssets);
       setNotice({
         type: "success",
@@ -969,8 +1026,8 @@ export default function App() {
   const handleExportCsv = () => {
     const targetAssets =
       selectedIds.size > 0
-        ? assets.filter((a) => selectedIds.has(a.id))
-        : assets;
+        ? effectiveAssets.filter((a) => selectedIds.has(a.id))
+        : effectiveAssets;
     const base =
       mapping.rootFolderName.trim() ||
       workbook?.fileName.replace(/\.(xlsx|xls|csv)$/i, "") ||
@@ -1043,6 +1100,7 @@ export default function App() {
         ...target,
         rawFileName: trimmed,
         sanitizedBaseName: uniqueStem,
+        duplicateOriginStem: undefined,
         plannedExtension: nextExt,
         targetFileName,
         targetPath: buildTargetPath(
@@ -1052,6 +1110,42 @@ export default function App() {
         ),
       };
       return next;
+    });
+  };
+
+  const handleBulkRename = (items: BulkRenamePreviewItem[]) => {
+    const updatesById = new Map<string, BulkRenamePreviewItem>();
+    let changedCount = 0;
+    for (const item of items) {
+      if (item.changed) changedCount++;
+      updatesById.set(item.assetId, item);
+    }
+    if (changedCount === 0) return;
+
+    setAssets((prev) =>
+      prev.map((asset) => {
+        const update = updatesById.get(asset.id);
+        if (!update || !update.changed) return asset;
+        const extChangedOnSaved =
+          asset.status === "saved" &&
+          Boolean(asset.blob) &&
+          update.newExtension !== asset.plannedExtension;
+        return {
+          ...asset,
+          rawFileName: update.newFileName,
+          sanitizedBaseName: update.newBaseName,
+          duplicateOriginStem: undefined,
+          plannedExtension: update.newExtension,
+          targetFileName: update.newFileName,
+          targetPath: update.newTargetPath,
+          needsTransform: extChangedOnSaved ? true : asset.needsTransform,
+        };
+      })
+    );
+
+    setNotice({
+      type: "success",
+      message: `Bulk renamed ${changedCount} selected ${changedCount === 1 ? "asset" : "assets"}.`,
     });
   };
 
@@ -1081,6 +1175,7 @@ export default function App() {
         ...target,
         styleFolder: targetFolder,
         sanitizedBaseName: uniqueStem,
+        duplicateOriginStem: undefined,
         targetFileName,
         targetPath: buildTargetPath(
           mapping.rootFolderName,
@@ -1092,7 +1187,10 @@ export default function App() {
     });
   };
 
-  const folders = useMemo(() => groupAssetsByFolder(assets), [assets]);
+  const folders = useMemo(
+    () => groupAssetsByFolder(effectiveAssets),
+    [effectiveAssets]
+  );
   const folderSaveSupported = useMemo(() => supportsLocalDirectoryPicker(), []);
 
   return (
@@ -1152,7 +1250,7 @@ export default function App() {
             folders={folders}
             selectedFolder={selectedFolder}
             onSelectFolder={setSelectedFolder}
-            totalFiles={assets.length}
+            totalFiles={effectiveAssets.length}
             disabled={isFetching || isValidating || isConverting || isZipping}
             onRenameFolder={handleRenameFolder}
             onRenameFile={handleRenameFile}
@@ -1249,7 +1347,7 @@ export default function App() {
               />
 
               <BatchSummaryPanel
-                assets={assets}
+                assets={effectiveAssets}
                 selectedIds={selectedIds}
                 isValidating={isValidating}
                 isFetching={isFetching}
@@ -1260,6 +1358,13 @@ export default function App() {
 
               <AssetQueueTable
                 assets={assets}
+                effectiveAssets={effectiveAssets}
+                assetViewMode={assetViewMode}
+                onChangeAssetViewMode={setAssetViewMode}
+                duplicateMatchScope={duplicateMatchScope}
+                onChangeDuplicateMatchScope={setDuplicateMatchScope}
+                duplicateAnalysis={duplicateAnalysis}
+                mapping={mapping}
                 selectedIds={selectedIds}
                 selectedFolder={selectedFolder}
                 onClearFolderFilter={() => setSelectedFolder(null)}
@@ -1278,8 +1383,8 @@ export default function App() {
                 onValidateImages={() => {
                   const pool =
                     selectedIds.size > 0
-                      ? assets.filter((a) => selectedIds.has(a.id))
-                      : assets;
+                      ? effectiveAssets.filter((a) => selectedIds.has(a.id))
+                      : effectiveAssets;
                   const hasReady = pool.some((a) => a.status === "ready");
                   runBatchValidate(
                     hasReady ? ["ready"] : ["reachable", "broken"]
@@ -1292,6 +1397,7 @@ export default function App() {
                 onRetryFailed={() => runBatchFetch(["failed"])}
                 onConvertSaved={runBatchConvert}
                 onPauseConvert={handlePauseConvert}
+                onBulkRename={handleBulkRename}
                 onExportZip={handleExportZip}
                 onSaveToFolder={handleSaveToFolder}
                 onExportCsv={handleExportCsv}

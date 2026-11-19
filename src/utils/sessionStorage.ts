@@ -1,5 +1,7 @@
 import type {
   AssetStatus,
+  AssetViewMode,
+  DuplicateMatchScope,
   MappingConfig,
   PlannedAsset,
   WorkbookData,
@@ -38,6 +40,8 @@ export interface SavedSessionPayload {
   assets: SerializableAsset[];
   selectedFolder: string | null;
   selectedIds: string[];
+  assetViewMode?: AssetViewMode;
+  duplicateMatchScope?: DuplicateMatchScope;
 }
 
 export interface RestoredSession {
@@ -49,6 +53,8 @@ export interface RestoredSession {
   selectedFolder: string | null;
   selectedIds: Set<string>;
   restoredFromSavedCount: number;
+  assetViewMode: AssetViewMode;
+  duplicateMatchScope: DuplicateMatchScope;
 }
 
 export type SaveSessionResult =
@@ -89,6 +95,8 @@ export function saveSessionState(input: {
   assets: PlannedAsset[];
   selectedFolder: string | null;
   selectedIds: Set<string>;
+  assetViewMode?: AssetViewMode;
+  duplicateMatchScope?: DuplicateMatchScope;
 }): SaveSessionResult {
   if (typeof window === "undefined" || !window.localStorage) {
     return { ok: false, reason: "unavailable" };
@@ -114,6 +122,8 @@ export function saveSessionState(input: {
     assets: serializableAssets,
     selectedFolder: input.selectedFolder,
     selectedIds: Array.from(input.selectedIds),
+    assetViewMode: input.assetViewMode ?? "all",
+    duplicateMatchScope: input.duplicateMatchScope ?? "filename",
   };
 
   try {
@@ -301,6 +311,11 @@ export function loadSessionState(): RestoredSession | null {
         ? parsed.selectedFolder
         : null;
 
+    const assetViewMode: AssetViewMode =
+      parsed.assetViewMode === "unique" ? "unique" : "all";
+    const duplicateMatchScope: DuplicateMatchScope =
+      parsed.duplicateMatchScope === "folder" ? "folder" : "filename";
+
     return {
       savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : Date.now(),
       workbook,
@@ -310,6 +325,8 @@ export function loadSessionState(): RestoredSession | null {
       selectedFolder,
       selectedIds,
       restoredFromSavedCount,
+      assetViewMode,
+      duplicateMatchScope,
     };
   } catch {
     return null;

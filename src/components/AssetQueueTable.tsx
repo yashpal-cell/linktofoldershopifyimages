@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Clock,
   Download,
   ExternalLink,
+  EyeOff,
   FileArchive,
+  FileEdit,
   FolderInput,
   Image as ImageIcon,
   Loader2,
+  Maximize2,
   Pause,
   Play,
   RefreshCw,
@@ -18,12 +22,28 @@ import {
   Unlink,
   X,
 } from "lucide-react";
-import type { AssetStatus, PlannedAsset } from "../types/asset.ts";
-import { formatBytes } from "../utils/fileNaming.ts";
+import type {
+  AssetStatus,
+  AssetViewMode,
+  DuplicateMatchScope,
+  MappingConfig,
+  PlannedAsset,
+} from "../types/asset.ts";
+import type { BulkRenamePreviewItem } from "../utils/bulkRename.ts";
+import { type DuplicateAnalysis, formatBytes } from "../utils/fileNaming.ts";
+import { BulkRenameModal } from "./BulkRenameModal.tsx";
+import { FullScreenPreviewModal } from "./FullScreenPreviewModal.tsx";
 import { ImagePreviewPanel } from "./ImagePreviewPanel.tsx";
 
 interface AssetQueueTableProps {
   assets: PlannedAsset[];
+  effectiveAssets: PlannedAsset[];
+  assetViewMode: AssetViewMode;
+  onChangeAssetViewMode: (mode: AssetViewMode) => void;
+  duplicateMatchScope: DuplicateMatchScope;
+  onChangeDuplicateMatchScope: (scope: DuplicateMatchScope) => void;
+  duplicateAnalysis: DuplicateAnalysis;
+  mapping: MappingConfig;
   selectedIds: Set<string>;
   selectedFolder: string | null;
   onClearFolderFilter: () => void;
@@ -45,6 +65,7 @@ interface AssetQueueTableProps {
   onRetryFailed: () => void;
   onConvertSaved: () => void;
   onPauseConvert: () => void;
+  onBulkRename: (items: BulkRenamePreviewItem[]) => void;
   onExportZip: () => void;
   onSaveToFolder: () => void;
   onExportCsv: () => void;
@@ -54,6 +75,13 @@ type FilterTab = "all" | AssetStatus;
 
 export function AssetQueueTable({
   assets,
+  effectiveAssets,
+  assetViewMode,
+  onChangeAssetViewMode,
+  duplicateMatchScope,
+  onChangeDuplicateMatchScope,
+  duplicateAnalysis,
+  mapping,
   selectedIds,
   selectedFolder,
   onClearFolderFilter,
@@ -75,6 +103,7 @@ export function AssetQueueTable({
   onRetryFailed,
   onConvertSaved,
   onPauseConvert,
+  onBulkRename,
   onExportZip,
   onSaveToFolder,
   onExportCsv,
@@ -82,12 +111,32 @@ export function AssetQueueTable({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusTab, setStatusTab] = useState<FilterTab>("all");
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
+  const [fullScreenAssetId, setFullScreenAssetId] = useState<string | null>(null);
+  const [showBulkRenameModal, setShowBulkRenameModal] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
-  const folderFiltered = useMemo(() => {
+  const folderScopeAll = useMemo(() => {
     if (!selectedFolder) return assets;
     return assets.filter((a) => a.styleFolder === selectedFolder);
   }, [assets, selectedFolder]);
+
+  const folderDuplicateCount = useMemo(() => {
+    let count = 0;
+    for (const a of folderScopeAll) {
+      if (duplicateAnalysis.duplicateIds.has(a.id)) count++;
+    }
+    return count;
+  }, [folderScopeAll, duplicateAnalysis.duplicateIds]);
+
+  const folderUniqueCount = Math.max(
+    0,
+    folderScopeAll.length - folderDuplicateCount
+  );
+
+  const folderFiltered = useMemo(() => {
+    if (!selectedFolder) return effectiveAssets;
+    return effectiveAssets.filter((a) => a.styleFolder === selectedFolder);
+  }, [effectiveAssets, selectedFolder]);
 
   const counts = useMemo(() => {
     let ready = 0;
@@ -148,6 +197,14 @@ export function AssetQueueTable({
   const activePreviewAsset =
     previewIndex >= 0 ? visibleAssets[previewIndex] : null;
 
+  const fullScreenIndex = useMemo(() => {
+    if (!fullScreenAssetId) return -1;
+    return visibleAssets.findIndex((a) => a.id === fullScreenAssetId);
+  }, [visibleAssets, fullScreenAssetId]);
+
+  const activeFullScreenAsset =
+    fullScreenIndex >= 0 ? visibleAssets[fullScreenIndex] : null;
+
   const visibleIds = useMemo(
     () => visibleAssets.map((a) => a.id),
     [visibleAssets]
@@ -174,18 +231,30 @@ export function AssetQueueTable({
   }, [someVisibleSelected]);
 
   const hasSelection = selectedIds.size > 0;
+  const selectedAssetsInOrder = useMemo(() => {
+    if (selectedIds.size === 0) return [];
+    const visibleSet = new Set(visibleAssets.map((a) => a.id));
+    const inVisible = visibleAssets.filter((a) => selectedIds.has(a.id));
+    const offFilter = effectiveAssets.filter(
+      (a) => selectedIds.has(a.id) && !visibleSet.has(a.id)
+    );
+    return [...inVisible, ...offFilter];
+  }, [effectiveAssets, visibleAssets, selectedIds]);
+
   const batchScope = useMemo(
     () =>
-      hasSelection ? assets.filter((a) => selectedIds.has(a.id)) : assets,
-    [assets, selectedIds, hasSelection]
+      hasSelection
+        ? effectiveAssets.filter((a) => selectedIds.has(a.id))
+        : effectiveAssets,
+    [effectiveAssets, selectedIds, hasSelection]
   );
 
-  const globalReadyCount = assets.filter((a) => a.status === "ready").length;
-  const globalReachableCount = assets.filter((a) => a.status === "reachable").length;
-  const globalBrokenCount = assets.filter((a) => a.status === "broken").length;
-  const globalSavedCount = assets.filter((a) => a.status === "saved").length;
-  const globalFailedCount = assets.filter((a) => a.status === "failed").length;
-  const globalActionableCount = assets.filter((a) => a.status !== "skipped").length;
+  const globalReadyCount = effectiveAssets.filter((a) => a.status === "ready").length;
+  const globalReachableCount = effectiveAssets.filter((a) => a.status === "reachable").length;
+  const globalBrokenCount = effectiveAssets.filter((a) => a.status === "broken").length;
+  const globalSavedCount = effectiveAssets.filter((a) => a.status === "saved").length;
+  const globalFailedCount = effectiveAssets.filter((a) => a.status === "failed").length;
+  const globalActionableCount = effectiveAssets.filter((a) => a.status !== "skipped").length;
 
   const scopeReadyCount = batchScope.filter((a) => a.status === "ready").length;
   const scopeReachableCount = batchScope.filter((a) => a.status === "reachable").length;
@@ -382,6 +451,29 @@ export function AssetQueueTable({
 
           <button
             type="button"
+            onClick={() => setShowBulkRenameModal(true)}
+            disabled={
+              selectedAssetsInOrder.length === 0 ||
+              isFetching ||
+              isValidating ||
+              isConverting ||
+              isZipping
+            }
+            title={
+              selectedAssetsInOrder.length === 0
+                ? "Select one or more rows using the checkboxes to bulk rename"
+                : `Bulk rename ${selectedAssetsInOrder.length} selected asset(s)`
+            }
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-45 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <FileEdit className="w-3.5 h-3.5 text-teal-700" />
+            {selectedAssetsInOrder.length > 0
+              ? `Bulk Rename (${selectedAssetsInOrder.length})`
+              : "Bulk Rename"}
+          </button>
+
+          <button
+            type="button"
             onClick={onExportZip}
             disabled={scopeSavedCount === 0 || isZipping || isConverting}
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-45 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
@@ -412,7 +504,7 @@ export function AssetQueueTable({
           <button
             type="button"
             onClick={onExportCsv}
-            disabled={assets.length === 0}
+            disabled={effectiveAssets.length === 0}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-45 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
@@ -439,6 +531,103 @@ export function AssetQueueTable({
           </span>
         </div>
       )}
+
+      {/* All vs Unique Duplicate Filter Bar */}
+      <div className="px-5 py-2.5 bg-slate-50/70 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div
+            role="group"
+            aria-label="Toggle between all assets and unique filenames"
+            className="inline-flex items-center gap-1 p-0.5 bg-slate-200/75 rounded-md"
+          >
+            <button
+              type="button"
+              onClick={() => onChangeAssetViewMode("all")}
+              className={`px-3 py-1 text-xs font-medium font-mono tabular-nums rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                assetViewMode === "all"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All ({folderScopeAll.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeAssetViewMode("unique")}
+              className={`px-3 py-1 text-xs font-medium font-mono tabular-nums rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                assetViewMode === "unique"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Unique ({folderUniqueCount})
+            </button>
+          </div>
+
+          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+            <span className="whitespace-nowrap">Match:</span>
+            <select
+              value={duplicateMatchScope}
+              onChange={(e) =>
+                onChangeDuplicateMatchScope(
+                  e.target.value as DuplicateMatchScope
+                )
+              }
+              aria-label="Duplicate filename match scope"
+              className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-800 focus:outline-none focus:border-teal-600 cursor-pointer"
+            >
+              <option value="filename">Duplicate filename (any folder)</option>
+              <option value="folder">Same folder + filename</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          {folderDuplicateCount > 0 ? (
+            assetViewMode === "all" ? (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span className="text-amber-800 font-medium font-mono tabular-nums">
+                  {folderDuplicateCount} duplicate filename
+                  {folderDuplicateCount === 1 ? "" : "s"} highlighted
+                </span>
+                <span className="text-slate-300" aria-hidden="true">
+                  ·
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onChangeAssetViewMode("unique")}
+                  className="text-teal-700 hover:text-teal-900 font-medium underline underline-offset-2 cursor-pointer whitespace-nowrap"
+                >
+                  Hide duplicates
+                </button>
+              </>
+            ) : (
+              <>
+                <EyeOff className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                <span className="text-slate-700 font-mono tabular-nums">
+                  {folderDuplicateCount} duplicate filename
+                  {folderDuplicateCount === 1 ? "" : "s"} hidden from view &amp; batch
+                </span>
+                <span className="text-slate-300" aria-hidden="true">
+                  ·
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onChangeAssetViewMode("all")}
+                  className="text-teal-700 hover:text-teal-900 font-medium underline underline-offset-2 cursor-pointer whitespace-nowrap"
+                >
+                  Show all
+                </button>
+              </>
+            )
+          ) : (
+            <span className="text-slate-500 font-mono tabular-nums">
+              All {folderScopeAll.length} filenames are unique
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* Search & Status Tabs */}
       <div className="px-5 py-3 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -543,6 +732,13 @@ export function AssetQueueTable({
               visibleAssets.slice(0, 500).map((asset) => {
                 const isPreviewSelected = asset.id === previewAssetId;
                 const isChecked = selectedIds.has(asset.id);
+                const dupInfo = duplicateAnalysis.occurrenceById.get(asset.id);
+                const isDuplicateRow =
+                  assetViewMode === "all" && Boolean(dupInfo?.isDuplicateOccurrence);
+                const isPrimaryWithDups =
+                  assetViewMode === "all" &&
+                  Boolean(dupInfo && !dupInfo.isDuplicateOccurrence);
+
                 return (
                 <tr
                   key={asset.id}
@@ -561,7 +757,11 @@ export function AssetQueueTable({
                         ? "bg-slate-100/80 hover:bg-slate-100"
                         : asset.status === "broken"
                           ? "bg-red-50/45 hover:bg-red-50/75"
-                          : "hover:bg-slate-50/80"
+                          : isDuplicateRow
+                            ? "bg-amber-50/75 hover:bg-amber-100/70"
+                            : isPrimaryWithDups
+                              ? "bg-amber-50/25 hover:bg-amber-50/50"
+                              : "hover:bg-slate-50/80"
                   }`}
                 >
                   <td
@@ -581,31 +781,56 @@ export function AssetQueueTable({
                     {asset.rowIndex}
                   </td>
 
-                  <td className="py-1.5 px-3">
-                    {asset.previewUrl ? (
-                      <div className="w-7 h-7 rounded border border-slate-200 overflow-hidden bg-slate-100">
-                        <img
-                          src={asset.previewUrl}
-                          alt={asset.targetFileName}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-                    ) : (
-                      <div
-                        className={`w-7 h-7 rounded border flex items-center justify-center ${
-                          asset.status === "broken"
-                            ? "border-red-200 bg-red-50 text-red-600"
-                            : "border-slate-200 bg-slate-50 text-slate-400"
-                        }`}
-                      >
-                        {asset.status === "broken" ? (
-                          <Unlink className="w-3.5 h-3.5" />
-                        ) : (
-                          <ImageIcon className="w-3.5 h-3.5" />
-                        )}
-                      </div>
-                    )}
+                  <td
+                    className="py-1.5 px-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviewAssetId(null);
+                        setFullScreenAssetId(asset.id);
+                      }}
+                      title="Open full-screen high-resolution preview (Original vs Converted)"
+                      aria-label={`Open full-screen preview for ${asset.targetFileName}`}
+                      className={`group relative w-7 h-7 rounded border overflow-hidden flex items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 cursor-zoom-in transition-shadow hover:ring-2 hover:ring-teal-600 ${
+                        !asset.previewUrl && asset.status === "broken"
+                          ? "border-red-200"
+                          : isDuplicateRow
+                            ? "border-amber-300"
+                            : "border-slate-200"
+                      }`}
+                    >
+                      {asset.previewUrl ? (
+                        <>
+                          <img
+                            src={asset.previewUrl}
+                            alt={asset.targetFileName}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover bg-slate-100"
+                          />
+                          <span className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/35 flex items-center justify-center transition-colors">
+                            <Maximize2 className="w-3 h-3 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </span>
+                        </>
+                      ) : (
+                        <div
+                          className={`w-full h-full flex items-center justify-center ${
+                            asset.status === "broken"
+                              ? "bg-red-50 text-red-600"
+                              : isDuplicateRow
+                                ? "bg-amber-50 text-amber-600"
+                                : "bg-slate-50 text-slate-400 group-hover:text-teal-700"
+                          }`}
+                        >
+                          {asset.status === "broken" ? (
+                            <Unlink className="w-3.5 h-3.5" />
+                          ) : (
+                            <ImageIcon className="w-3.5 h-3.5" />
+                          )}
+                        </div>
+                      )}
+                    </button>
                   </td>
 
                   <td
@@ -616,12 +841,37 @@ export function AssetQueueTable({
                   </td>
 
                   <td
-                    className={`py-1.5 px-3 font-mono font-medium max-w-[240px] truncate ${
-                      asset.status === "broken" ? "text-red-900 line-through decoration-red-400" : "text-slate-900"
+                    className={`py-1.5 px-3 font-mono font-medium max-w-[260px] ${
+                      asset.status === "broken"
+                        ? "text-red-900 line-through decoration-red-400"
+                        : isDuplicateRow
+                          ? "text-amber-950"
+                          : "text-slate-900"
                     }`}
-                    title={asset.targetPath}
+                    title={
+                      dupInfo && assetViewMode === "all"
+                        ? dupInfo.isDuplicateOccurrence
+                          ? `Duplicate filename of row #${dupInfo.primaryRowIndex} (${dupInfo.primaryFileName}) — ${asset.targetPath}`
+                          : `Appears ${dupInfo.total} times — ${asset.targetPath}`
+                        : asset.targetPath
+                    }
                   >
-                    {asset.targetFileName}
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="truncate">{asset.targetFileName}</span>
+                      {dupInfo && assetViewMode === "all" && (
+                        <span
+                          className={`shrink-0 text-[10px] font-mono tabular-nums whitespace-nowrap ${
+                            dupInfo.isDuplicateOccurrence
+                              ? "text-amber-700 font-semibold"
+                              : "text-amber-700/80"
+                          }`}
+                        >
+                          {dupInfo.isDuplicateOccurrence
+                            ? `DUP ${dupInfo.index}/${dupInfo.total}`
+                            : `×${dupInfo.total}`}
+                        </span>
+                      )}
+                    </div>
                   </td>
 
                   <td className="py-1.5 px-3 max-w-[300px]">
@@ -729,6 +979,13 @@ export function AssetQueueTable({
         currentIndex={previewIndex}
         totalCount={visibleAssets.length}
         onClose={() => setPreviewAssetId(null)}
+        onExpandFullScreen={() => {
+          if (activePreviewAsset) {
+            const id = activePreviewAsset.id;
+            setPreviewAssetId(null);
+            setFullScreenAssetId(id);
+          }
+        }}
         onPrevious={() => {
           if (previewIndex > 0) {
             setPreviewAssetId(visibleAssets[previewIndex - 1].id);
@@ -739,6 +996,33 @@ export function AssetQueueTable({
             setPreviewAssetId(visibleAssets[previewIndex + 1].id);
           }
         }}
+      />
+
+      <FullScreenPreviewModal
+        asset={activeFullScreenAsset}
+        currentIndex={fullScreenIndex}
+        totalCount={visibleAssets.length}
+        mapping={mapping}
+        onClose={() => setFullScreenAssetId(null)}
+        onPrevious={() => {
+          if (fullScreenIndex > 0) {
+            setFullScreenAssetId(visibleAssets[fullScreenIndex - 1].id);
+          }
+        }}
+        onNext={() => {
+          if (fullScreenIndex >= 0 && fullScreenIndex < visibleAssets.length - 1) {
+            setFullScreenAssetId(visibleAssets[fullScreenIndex + 1].id);
+          }
+        }}
+      />
+
+      <BulkRenameModal
+        isOpen={showBulkRenameModal}
+        allAssets={assets}
+        selectedAssets={selectedAssetsInOrder}
+        rootFolderName={mapping.rootFolderName}
+        onClose={() => setShowBulkRenameModal(false)}
+        onApply={onBulkRename}
       />
     </section>
   );

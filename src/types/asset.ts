@@ -10,6 +10,10 @@ export type AssetStatus =
 
 export type DuplicatePolicy = "number" | "skip" | "overwrite";
 
+export type AssetViewMode = "all" | "unique";
+
+export type DuplicateMatchScope = "filename" | "folder";
+
 export type OutputImageFormat =
   | "original"
   | "jpg"
@@ -58,6 +62,7 @@ export interface PlannedAsset {
   styleFolder: string;
   rawFileName: string;
   sanitizedBaseName: string;
+  duplicateOriginStem?: string;
   plannedExtension: string;
   targetFileName: string;
   targetPath: string;

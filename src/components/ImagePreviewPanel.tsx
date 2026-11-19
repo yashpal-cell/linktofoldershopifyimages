@@ -27,6 +27,7 @@ interface ImagePreviewPanelProps {
   onClose: () => void;
   onPrevious: () => void;
   onNext: () => void;
+  onExpandFullScreen?: () => void;
 }
 
 export function ImagePreviewPanel({
@@ -36,6 +37,7 @@ export function ImagePreviewPanel({
   onClose,
   onPrevious,
   onNext,
+  onExpandFullScreen,
 }: ImagePreviewPanelProps) {
   const [imageState, setImageState] = useState<"loading" | "loaded" | "error">(
     "loading"
@@ -145,6 +147,17 @@ export function ImagePreviewPanel({
             >
               <ChevronRight className="w-4 h-4" />
             </button>
+            {onExpandFullScreen && (
+              <button
+                type="button"
+                onClick={onExpandFullScreen}
+                aria-label="Open full-screen high-resolution comparison"
+                title="Open full-screen comparison"
+                className="p-1.5 ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md cursor-pointer"
+              >
+                <Maximize2 className="w-4 h-4" />
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}

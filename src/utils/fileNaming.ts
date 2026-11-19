@@ -1,4 +1,5 @@
 import type {
+  DuplicateMatchScope,
   FolderNode,
   MappingConfig,
   OutputImageFormat,
@@ -157,11 +158,13 @@ export function buildPlannedAssets(
       const folderKey = styleFolder.toLowerCase();
 
       let finalBaseName = baseName;
+      let duplicateOriginStem: string | undefined;
       let status: PlannedAsset["status"] = "ready";
       const candidateKey = `${folderKey}/${finalBaseName.toLowerCase()}${plannedExt}`;
       const existingCount = usedPaths.get(candidateKey) ?? 0;
 
       if (existingCount > 0) {
+        duplicateOriginStem = baseName.toLowerCase();
         if (config.duplicatePolicy === "skip") {
           status = "skipped";
         } else if (config.duplicatePolicy === "number") {
@@ -194,6 +197,7 @@ export function buildPlannedAssets(
         styleFolder,
         rawFileName: rawFileCell || extractFileNameFromUrl(entry.url),
         sanitizedBaseName: finalBaseName,
+        ...(duplicateOriginStem ? { duplicateOriginStem } : {}),
         plannedExtension: plannedExt,
         targetFileName,
         targetPath,
@@ -304,6 +308,92 @@ export function retargetQueueExtension(
       ),
     };
   });
+}
+
+export interface DuplicateOccurrenceInfo {
+  index: number;
+  total: number;
+  primaryId: string;
+  primaryRowIndex: number;
+  primaryFileName: string;
+  isDuplicateOccurrence: boolean;
+}
+
+export interface DuplicateAnalysis {
+  primaryIds: Set<string>;
+  duplicateIds: Set<string>;
+  allInvolvedIds: Set<string>;
+  occurrenceById: Map<string, DuplicateOccurrenceInfo>;
+}
+
+export function analyzeDuplicateFilenames(
+  assets: PlannedAsset[],
+  scope: DuplicateMatchScope = "filename"
+): DuplicateAnalysis {
+  const groups = new Map<string, PlannedAsset[]>();
+
+  for (const asset of assets) {
+    const effectiveStem = (
+      asset.duplicateOriginStem || asset.sanitizedBaseName
+    )
+      .trim()
+      .toLowerCase();
+    const ext = asset.plannedExtension.trim().toLowerCase();
+    const canonicalFile = `${effectiveStem}${ext}`;
+    const key =
+      scope === "folder"
+        ? `${asset.styleFolder.trim().toLowerCase()}/${canonicalFile}`
+        : canonicalFile;
+
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(asset);
+    } else {
+      groups.set(key, [asset]);
+    }
+  }
+
+  const primaryIds = new Set<string>();
+  const duplicateIds = new Set<string>();
+  const allInvolvedIds = new Set<string>();
+  const occurrenceById = new Map<string, DuplicateOccurrenceInfo>();
+
+  for (const group of groups.values()) {
+    if (group.length <= 1) continue;
+
+    // Prefer the first non-skipped asset as the primary unique asset
+    const primaryAsset =
+      group.find((item) => item.status !== "skipped") ?? group[0];
+    primaryIds.add(primaryAsset.id);
+
+    const ordered = [
+      primaryAsset,
+      ...group.filter((item) => item.id !== primaryAsset.id),
+    ];
+
+    ordered.forEach((item, idx) => {
+      allInvolvedIds.add(item.id);
+      const isDup = idx > 0;
+      if (isDup) {
+        duplicateIds.add(item.id);
+      }
+      occurrenceById.set(item.id, {
+        index: idx + 1,
+        total: ordered.length,
+        primaryId: primaryAsset.id,
+        primaryRowIndex: primaryAsset.rowIndex,
+        primaryFileName: primaryAsset.targetFileName,
+        isDuplicateOccurrence: isDup,
+      });
+    });
+  }
+
+  return {
+    primaryIds,
+    duplicateIds,
+    allInvolvedIds,
+    occurrenceById,
+  };
 }
 
 export function formatBytes(bytes?: number): string {
