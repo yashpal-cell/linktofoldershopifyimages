@@ -1,0 +1,6 @@
+{
+  "name": "StyleVault",
+  "description": "Batch download Shopify CDN image links from Excel spreadsheets and store them file-name-wise inside style-wise folders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
